@@ -1,0 +1,104 @@
+stages:
+  - scan
+  - compile
+  - test
+  - build
+  - security_scan
+  - load-testing
+  - deploy
+
+# prio1: job variable
+# prio2: global variable
+# prio3: default value
+variables:
+  APP_NAME: "demo-app"
+  DOCKER_IMAGE: "registry.gitlab.com/galihhamdu/jaghost-cicd/demo-app:latest"
+  SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar"  # Defines the location of the analysis task cache
+  GIT_DEPTH: "0"  # Tells git to fetch all the branches of the project, required by the analysis task
+
+sonarcloud-check:
+  stage: scan
+  image:
+    name: sonarsource/sonar-scanner-cli:latest
+    entrypoint: [""]
+  cache:
+    key: "${CI_JOB_NAME}"
+    paths:
+      - .sonar/cache
+  script:
+    - sonar-scanner
+  only:
+    - merge_requests
+    - develop
+    - main
+
+build:
+  stage: compile
+  image: golang:latest
+  tags:
+    - jaghost-runner
+  script:
+    - go mod tidy
+    - go build -o app . #binary app, executable
+  artifacts:
+    paths:
+      - app
+
+unit_test:
+  stage: test
+  image: golang:latest
+  tags:
+    - jaghost-runner
+  needs: ["build"]
+  script:
+    - ./app &
+    - go test main_test.go -v
+
+integration_test:
+  stage: test
+  image: golang:latest
+  tags:
+    - jaghost-runner
+  needs: ["build"]
+  script:
+    - echo "integration test ..."
+
+build:image:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  script:
+    - docker build -t $DOCKER_IMAGE .
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    - docker push $DOCKER_IMAGE
+
+load:testing:
+  stage: load-testing
+  image: alpine:latest
+  tags:
+    - jaghost-runner #1G
+  script:
+    - echo "load testing ..."
+  parallel: 5
+
+container_scan:
+  stage: security_scan
+  image: alpine:latest
+  tags:
+    - jaghost-runner
+  needs: ["build:image"]
+  variables:
+    GIT_STRATEGY: none
+  script:
+    - echo "scan ..."
+
+deploy:
+  stage: deploy
+  image: docker:latest
+  tags:
+    - jaghost-runner
+  script:
+    - echo "deploy ..."
+    - docker pull $DOCKER_IMAGE
+    - docker run -d -p 8080:8080 $DOCKER_IMAGE
